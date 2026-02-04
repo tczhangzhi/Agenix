@@ -25,7 +25,6 @@ class AgentConfig:
     max_turns: int = 10  # Maximum conversation turns per prompt
     max_tool_calls_per_turn: int = 20  # Maximum tool calls per turn
     max_tokens: int = 16384  # Maximum tokens for LLM output (default: 16384 for modern models)
-    skill_dirs: Optional[List[str]] = None  # Directories to load skills from
 
     def __post_init__(self):
         """Create provider after initialization."""
@@ -41,71 +40,26 @@ class AgentConfig:
 class Agent:
     """Agent runtime with tool execution loop."""
 
-    def __init__(self, config: AgentConfig, tools: Optional[List[Tool]] = None):
+    def __init__(
+        self,
+        config: AgentConfig,
+        tools: Optional[List[Tool]] = None,
+        agent_id: Optional[str] = None,
+        parent_chain: Optional[List[str]] = None
+    ):
         self.config = config
         self.tools = tools or []
         self.messages: List[Message] = []
         self.subscribers: List[Callable[[Event], None]] = []
 
+        # Unique agent ID (for tracking agent hierarchy)
+        self.agent_id = agent_id or str(uuid.uuid4())
+
+        # Parent chain (list of ancestor agent IDs to prevent circular calls)
+        self.parent_chain = parent_chain or []
+
         # Build tool lookup
         self.tool_map = {tool.name: tool for tool in self.tools}
-
-        # Initialize skill manager
-        from .skills import SkillManager
-        self.skill_manager = SkillManager(skill_dirs=config.skill_dirs)
-
-        # Inject skills into system prompt
-        self._inject_skills_into_system_prompt()
-
-    def _inject_skills_into_system_prompt(self):
-        """Inject available skills into system prompt.
-
-        Uses simple, clear format following pi-mono's approach.
-        Skills provide specialized instructions via progressive disclosure.
-        """
-        skills = self.skill_manager.list_skills()
-        visible_skills = [s for s in skills if not s.disable_model_invocation]
-
-        if not visible_skills:
-            return
-
-        # Simple, clear instructions (pi-mono style)
-        instructions = []
-        instructions.append("\n\n")
-        instructions.append(
-            "The following skills provide specialized instructions for specific tasks.\n")
-        instructions.append(
-            "Use the read tool to load a skill's file when the task matches its description.\n")
-        instructions.append(
-            "When a skill file references a relative path, resolve it against the skill directory.\n")
-        instructions.append("\n")
-        instructions.append("<available_skills>\n")
-
-        # Add skills with name, description, and location (XML format)
-        for skill in visible_skills:
-            instructions.append("  <skill>\n")
-            instructions.append(
-                f"    <name>{self._escape_xml(skill.name)}</name>\n")
-            instructions.append(
-                f"    <description>{self._escape_xml(skill.description)}</description>\n")
-            instructions.append(
-                f"    <location>{self._escape_xml(skill.file_path)}</location>\n")
-            instructions.append("  </skill>\n")
-
-        instructions.append("</available_skills>\n")
-
-        # Append to system prompt
-        if self.config.system_prompt:
-            self.config.system_prompt += "".join(instructions)
-
-    def _escape_xml(self, text: str) -> str:
-        """Escape XML special characters."""
-        return (text
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace('"', "&quot;")
-                .replace("'", "&apos;"))
 
     def subscribe(self, callback: Callable[[Event], None]) -> Callable[[], None]:
         """Subscribe to agent events.

@@ -1,54 +1,63 @@
-.PHONY: help install test clean build upload upload-test check docs
+.PHONY: help test test-all test-unit test-integration coverage lint format type-check clean install dev-install docs
 
 help:
-	@echo "Agenix - Development Commands"
-	@echo ""
-	@echo "make install      - Install package in development mode"
-	@echo "make dev          - Install with dev dependencies"
-	@echo "make docs         - Install with docs dependencies"
-	@echo "make test         - Run all tests"
-	@echo "make clean        - Clean build artifacts"
-	@echo "make build        - Build distribution packages"
-	@echo "make check        - Check package before upload"
-	@echo "make upload-test  - Upload to TestPyPI"
-	@echo "make upload       - Upload to PyPI"
+	@echo "Available targets:"
+	@echo "  install         - Install package"
+	@echo "  dev-install     - Install package with dev dependencies"
+	@echo "  test            - Run all tests"
+	@echo "  test-unit       - Run unit tests only"
+	@echo "  test-integration - Run integration tests only"
+	@echo "  coverage        - Run tests with coverage report"
+	@echo "  lint            - Run linters (black, isort, flake8)"
+	@echo "  format          - Format code with black and isort"
+	@echo "  type-check      - Run type checker (mypy)"
+	@echo "  clean           - Clean build artifacts"
+	@echo "  docs            - Build documentation"
 
 install:
 	pip install -e .
 
-dev:
-	pip install -e .[dev]
-
-docs:
-	pip install -e .[docs]
+dev-install:
+	pip install -e .
+	pip install -r requirements-dev.txt
 
 test:
 	pytest tests/ -v
 
+test-unit:
+	pytest tests/ -v -m "not integration"
+
+test-integration:
+	pytest tests/integration/ -v -m integration
+
+coverage:
+	pytest tests/ -v --cov=agenix --cov-report=html --cov-report=term
+
+lint:
+	black --check agenix/ tests/
+	isort --check-only agenix/ tests/
+	flake8 agenix/ tests/
+
+format:
+	black agenix/ tests/
+	isort agenix/ tests/
+
+type-check:
+	mypy agenix/ --ignore-missing-imports
+
 clean:
-	rm -rf build dist *.egg-info
+	rm -rf build/
+	rm -rf dist/
+	rm -rf *.egg-info
+	rm -rf .pytest_cache/
+	rm -rf .tox/
+	rm -rf htmlcov/
+	rm -rf .coverage
+	rm -rf coverage.xml
 	find . -type d -name __pycache__ -exec rm -rf {} +
-	find . -type f -name '*.pyc' -delete
-	find . -type f -name '*.pyo' -delete
+	find . -type f -name "*.pyc" -delete
 
-build: clean
-	pip install --upgrade build
-	python -m build
-
-check: build
-	pip install --upgrade twine
-	twine check dist/*
-
-upload-test: check
-	twine upload --repository testpypi dist/*
-	@echo ""
-	@echo "Test installation with:"
-	@echo "pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple agenix"
-
-upload: check
-	twine upload dist/*
-	@echo ""
-	@echo "Published to PyPI!"
-	@echo "Install with: pip install agenix"
+docs:
+	cd docs && make html
 
 .DEFAULT_GOAL := help

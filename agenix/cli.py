@@ -9,11 +9,15 @@ from pathlib import Path
 from .core.agent import Agent, AgentConfig
 from .core.llm import get_provider
 from .core.session import SessionManager
+from .extensions.agent_registry import AgentRegistry
 from .tools.bash import BashTool
 from .tools.edit import EditTool
 from .tools.grep import GrepTool
 from .tools.read import ReadTool
 from .tools.write import WriteTool
+from .tools.glob import GlobTool
+from .tools.skill import SkillTool
+from .tools.task import TaskTool
 from .ui.cli import CLI, CLIRenderer
 
 
@@ -106,6 +110,9 @@ def get_default_system_prompt(tools: list) -> str:
         "edit": "Make surgical edits to files (find exact text and replace)",
         "bash": "Execute bash commands (ls, grep, find, etc.)",
         "grep": "Search file contents for patterns",
+        "glob": "Find files matching glob patterns",
+        "skill": "Load specialized instructions from SKILL.md files",
+        "task": "Delegate tasks to specialized subagents",
     }
 
     # Build tools list
@@ -239,31 +246,27 @@ def main():
     cli = CLI() if is_interactive else None
 
     # Setup tools early so we can show them in banner
+    # Note: TaskTool will be added after Agent creation (needs agent_id)
     tools = [
         ReadTool(working_dir=working_dir),
         WriteTool(working_dir=working_dir),
         EditTool(working_dir=working_dir),
         BashTool(working_dir=working_dir),
         GrepTool(working_dir=working_dir),
+        GlobTool(working_dir=working_dir),
+        SkillTool(working_dir=working_dir),
     ]
 
-    # Setup skill directories (in priority order: default -> user -> project)
-    skill_dirs = []
-
-    # 1. Default skills (bundled with package, lowest priority)
-    default_skills_dir = os.path.join(os.path.dirname(__file__), "default-skills")
-    if os.path.exists(default_skills_dir):
-        skill_dirs.append(default_skills_dir)
-
-    # 2. User global skills (can override defaults)
-    user_skills_dir = os.path.expanduser("~/.agenix/skills")
-    if os.path.exists(user_skills_dir):
-        skill_dirs.append(user_skills_dir)
-
-    # 3. Project local skills (highest priority, can override both)
-    project_skills_dir = os.path.join(working_dir, ".agenix/skills")
-    if os.path.exists(project_skills_dir):
-        skill_dirs.append(project_skills_dir)
+    # Initialize Agent Registry
+    # This loads all available agents from:
+    # 1. Built-in agents (agenix/agents/)
+    # 2. User global agents (~/.config/agenix/agents/)
+    # 3. Project local agents (.agenix/agents/)
+    AgentRegistry.initialize(
+        working_dir=Path(working_dir),
+        api_key=None,  # Will be set later after config validation
+        base_url=None
+    )
 
     # In interactive mode, show banner first, then ask for config if needed
     if is_interactive and cli:
@@ -272,21 +275,12 @@ def main():
         base_url = args.base_url or os.getenv("OPENAI_BASE_URL")
         model = args.model or get_default_model()
 
-        # Initialize agent to get skills for banner
+        # Get skills from SkillTool for banner
         try:
-            # Temporarily create agent to load skills
-            config = AgentConfig(
-                model=model,
-                api_key=api_key or "temp",  # Temp key to load skills
-                base_url=base_url,
-                system_prompt=get_default_system_prompt(tools),
-                max_turns=args.max_turns,
-                max_tokens=args.max_tokens,
-                skill_dirs=skill_dirs if skill_dirs else None,
-            )
-            temp_agent = Agent(config=config, tools=tools)
-            skills = temp_agent.skill_manager.list_skills() if temp_agent.skill_manager else []
-        except:
+            skill_tool = next(t for t in tools if t.name == "skill")
+            skills = [{"name": name, "description": info.get("description", "")}
+                      for name, info in skill_tool._available_skills.items()]
+        except (StopIteration, AttributeError):
             skills = []
 
         # Show banner
@@ -329,13 +323,26 @@ def main():
             system_prompt=args.system_prompt or get_default_system_prompt(tools),
             max_turns=args.max_turns,
             max_tokens=args.max_tokens,
-            skill_dirs=skill_dirs if skill_dirs else None,
         )
         agent = Agent(config=config, tools=tools)
 
-        # Get skills list for UI (if not already loaded)
+        # Add TaskTool after agent creation (needs agent_id)
+        task_tool = TaskTool(
+            working_dir=working_dir,
+            agent_id=agent.agent_id,
+            parent_chain=[]  # Main agent has no parents
+        )
+        agent.tools.append(task_tool)
+        agent.tool_map[task_tool.name] = task_tool
+
+        # Get skills list for UI (from SkillTool)
         if is_interactive:
-            skills = agent.skill_manager.list_skills() if agent.skill_manager else []
+            try:
+                skill_tool = next(t for t in tools if t.name == "skill")
+                skills = [{"name": name, "description": info.get("description", "")}
+                          for name, info in skill_tool._available_skills.items()]
+            except (StopIteration, AttributeError):
+                skills = []
     except Exception as e:
         if is_interactive and cli:
             cli.renderer.render_error(f"Error initializing agent: {e}")

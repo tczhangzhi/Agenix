@@ -131,7 +131,7 @@ class TestEditTool:
             )
 
             assert result.is_error is True
-            assert "not found" in result.content.lower()
+            assert "could not find" in result.content.lower()
         finally:
             self.tearDown()
 

@@ -84,3 +84,4 @@ sessions/
 *.bak
 test_output/
 test_sessions/
+.env
