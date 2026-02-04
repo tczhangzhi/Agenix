@@ -1,0 +1,60 @@
+{% set name = "agenix" %}
+{% set version = "0.0.1" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  # For development, use local path:
+  # path: ..
+
+build:
+  noarch: python
+  number: 0
+  script: {{ PYTHON }} -m pip install . -vv
+  entry_points:
+    - agenix = main:main
+
+requirements:
+  host:
+    - python >=3.8
+    - pip
+    - setuptools >=61.0
+    - wheel
+  run:
+    - python >=3.8
+    - openai >=1.12.0
+    - anthropic >=0.18.0
+    - rich >=13.7.0
+    - pyyaml >=6.0
+
+test:
+  imports:
+    - agenix
+    - agenix.core
+    - agenix.tools
+    - agenix.ui
+  commands:
+    - agenix --help
+  requires:
+    - pytest >=7.4.0
+    - pytest-asyncio >=0.21.0
+
+about:
+  home: https://github.com/tczhangzhi/agenix
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  summary: A lightweight AI coding agent with file operations and shell execution capabilities
+  description: |
+    Agenix is a lightweight AI coding agent powered by LLMs (OpenAI/Anthropic)
+    with file operation and shell execution capabilities. It supports the Agent
+    Skills standard for extending capabilities with specialized instructions.
+  doc_url: https://github.com/tczhangzhi/agenix
+  dev_url: https://github.com/tczhangzhi/agenix
+
+extra:
+  recipe-maintainers:
+    - tczhangzhi
