@@ -14,6 +14,8 @@ requirements = [
     "rich>=13.7.0",
     "pyyaml>=6.0",
     "prompt_toolkit>=3.0.0",  # Better terminal input with unicode support
+    "litellm>=1.0.0",  # Multi-model LLM support
+    "aiohttp>=3.9.0",  # Async HTTP client
 ]
 
 dev_requirements = [

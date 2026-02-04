@@ -36,28 +36,23 @@ class AgentConfig:
     max_turns: int = 10  # Maximum conversation turns per prompt
     max_tool_calls_per_turn: int = 20  # Maximum tool calls per turn
     max_tokens: int = 16384  # Maximum tokens for LLM output (default: 16384 for modern models)
+    provider: Optional[LLMProvider] = None  # Optional provider instance
+    reasoning_effort: Optional[str] = None  # Reasoning effort for thinking models
 
     def __post_init__(self):
-        """Create provider after initialization."""
-        # Auto-detect provider from base_url or model name
-        try:
-            # Check if using Anthropic (by base_url or model name)
-            is_anthropic = (
-                (self.base_url and "anthropic" in self.base_url.lower()) or
-                (self.base_url and "aihubmix.com" in self.base_url.lower() and "claude" in self.model.lower()) or
-                ("claude" in self.model.lower() and not self.base_url)
-            )
-
-            if is_anthropic:
-                from .llm import AnthropicProvider
-                self.provider = AnthropicProvider(
-                    api_key=self.api_key, base_url=self.base_url)
-            else:
-                from .llm import OpenAIProvider
-                self.provider = OpenAIProvider(
-                    api_key=self.api_key, base_url=self.base_url)
-        except Exception as e:
-            raise ValueError(f"Failed to initialize LLM provider: {e}")
+        """Create provider after initialization if not provided."""
+        if self.provider is None:
+            # Create LiteLLM provider
+            from .llm import get_provider
+            try:
+                self.provider = get_provider(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    model=self.model,
+                    reasoning_effort=self.reasoning_effort,
+                )
+            except Exception as e:
+                raise ValueError(f"Failed to initialize LLM provider: {e}")
 
 
 class Agent:
@@ -290,6 +285,14 @@ class Agent:
 
             async for event in stream:
                 if event.type == "text_delta":
+                    # If reasoning is in progress, close it before text starts
+                    if reasoning_parts and not text_parts:
+                        # First text chunk after reasoning - emit reasoning end events
+                        for reasoning_id, content in reasoning_parts.items():
+                            reasoning_end = ReasoningEndEvent(reasoning_id=reasoning_id, content=content)
+                            self._emit(reasoning_end)
+                            yield reasoning_end
+
                     text_parts.append(event.delta)
                     # Update message
                     message.content = [TextContent(text="".join(text_parts))]
@@ -328,11 +331,12 @@ class Agent:
                     # Capture finish reason from LLM
                     finish_reason = event.finish_reason
 
-            # Emit reasoning end events and add to message content
-            for reasoning_id, content in reasoning_parts.items():
-                reasoning_end = ReasoningEndEvent(reasoning_id=reasoning_id, content=content)
-                self._emit(reasoning_end)
-                yield reasoning_end
+            # Emit reasoning end events for any remaining reasoning (if no text followed)
+            if reasoning_parts and not text_parts:
+                for reasoning_id, content in reasoning_parts.items():
+                    reasoning_end = ReasoningEndEvent(reasoning_id=reasoning_id, content=content)
+                    self._emit(reasoning_end)
+                    yield reasoning_end
 
             # Finalize message
             content_list = []

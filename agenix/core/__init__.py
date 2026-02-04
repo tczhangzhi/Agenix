@@ -1,7 +1,7 @@
 """Core package initialization."""
 
 from .agent import Agent, AgentConfig
-from .llm import LLMProvider, OpenAIProvider, AnthropicProvider, StreamEvent
+from .llm import LLMProvider, LiteLLMProvider, StreamEvent, get_provider
 from .messages import (
     Message,
     UserMessage,
@@ -25,6 +25,7 @@ from .messages import (
     ToolExecutionEndEvent,
 )
 from .session import SessionManager
+from .settings import Settings, get_default_model, ensure_config_dir
 
 __all__ = [
     # Agent
@@ -32,9 +33,9 @@ __all__ = [
     "AgentConfig",
     # LLM
     "LLMProvider",
-    "OpenAIProvider",
-    "AnthropicProvider",
+    "LiteLLMProvider",
     "StreamEvent",
+    "get_provider",
     # Messages
     "Message",
     "UserMessage",
@@ -59,4 +60,8 @@ __all__ = [
     "ToolExecutionEndEvent",
     # Session
     "SessionManager",
+    # Settings
+    "Settings",
+    "get_default_model",
+    "ensure_config_dir",
 ]

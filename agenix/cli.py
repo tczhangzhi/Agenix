@@ -9,7 +9,7 @@ from pathlib import Path
 from .core.agent import Agent, AgentConfig
 from .core.llm import get_provider
 from .core.session import SessionManager
-from .extensions.agent_registry import AgentRegistry
+from .core.settings import Settings, get_default_model
 from .tools.bash import BashTool
 from .tools.edit import EditTool
 from .tools.grep import GrepTool
@@ -24,27 +24,36 @@ from .ui.cli import CLI, CLIRenderer
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Agenix - Lightweight AI coding agent"
+        description="Agenix - Lightweight AI coding agent with multi-model support"
     )
 
+    # Model configuration
     parser.add_argument(
         "--model",
         type=str,
-        help="Model to use (e.g., gpt-4o, gpt-4, claude-3-5-sonnet-20241022)"
+        help="Model to use (e.g., gpt-4o, claude-sonnet-4-5, gemini/gemini-pro)"
     )
 
     parser.add_argument(
         "--api-key",
         type=str,
-        help="API key (or set OPENAI_API_KEY env var)"
+        help="API key (or set AGENIX_API_KEY env var)"
     )
 
     parser.add_argument(
         "--base-url",
         type=str,
-        help="API base URL (optional, for OpenAI-compatible APIs)"
+        help="API base URL (optional, for custom endpoints)"
     )
 
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        choices=["low", "medium", "high"],
+        help="Reasoning effort for thinking models (low/medium/high)"
+    )
+
+    # Agent configuration
     parser.add_argument(
         "--working-dir",
         type=str,
@@ -67,17 +76,44 @@ def parse_args():
     parser.add_argument(
         "--max-turns",
         type=int,
-        default=100,
         help="Maximum conversation turns per prompt (default: 100)"
     )
 
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=16384,
-        help="Maximum tokens for LLM output (default: 16384). Common values: 4096, 8192, 16384, 32768"
+        help="Maximum tokens for LLM output (default: 16384)"
     )
 
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        help="Sampling temperature (default: 0.7)"
+    )
+
+    # Commands
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Auth command (placeholder for future implementation)
+    auth_parser = subparsers.add_parser("auth", help="Manage OAuth authentication")
+    auth_subparsers = auth_parser.add_subparsers(dest="auth_command")
+
+    # auth login
+    login_parser = auth_subparsers.add_parser("login", help="Login to a provider")
+    login_parser.add_argument("provider", choices=["google", "claude", "chatgpt", "antigravity"])
+
+    # auth list
+    auth_subparsers.add_parser("list", help="List configured providers")
+
+    # auth status
+    status_parser = auth_subparsers.add_parser("status", help="Show token status")
+    status_parser.add_argument("provider", nargs="?")
+
+    # auth revoke
+    revoke_parser = auth_subparsers.add_parser("revoke", help="Revoke tokens")
+    revoke_parser.add_argument("provider")
+
+    # Main message argument
     parser.add_argument(
         "message",
         nargs="*",
@@ -85,11 +121,6 @@ def parse_args():
     )
 
     return parser.parse_args()
-
-
-def get_default_model() -> str:
-    """Get default model."""
-    return "gpt-4o"
 
 
 def get_default_system_prompt(tools: list) -> str:
@@ -128,7 +159,6 @@ def get_default_system_prompt(tools: list) -> str:
     has_read = "read" in tool_names
     has_edit = "edit" in tool_names
     has_write = "write" in tool_names
-    has_bash = "bash" in tool_names
 
     # Read before edit guideline
     if has_read and has_edit:
@@ -171,73 +201,46 @@ Current date and time: {date_time}
 Current working directory: {cwd}"""
 
 
-def validate_config(args, renderer: CLIRenderer = None) -> tuple:
-    """Validate configuration and return api_key, base_url, model.
-
-    Args:
-        args: Command-line arguments
-        renderer: CLI renderer for interactive input (optional)
-
-    Returns:
-        tuple: (api_key, base_url, model)
-
-    Raises:
-        ValueError: If configuration is invalid and no renderer provided
-    """
-    # Get API key
-    api_key = args.api_key or os.getenv("OPENAI_API_KEY")
-
-    # If no API key and renderer available, prompt for it
-    if not api_key and renderer:
-        api_key = renderer.prompt_config_input(
-            "API Key",
-            "OpenAI-compatible API key required",
-            is_secret=True
-        )
-    elif not api_key:
-        raise ValueError(
-            "API key not found. Please set OPENAI_API_KEY environment variable "
-            "or use --api-key parameter.\n\n"
-            "Example:\n"
-            "  export OPENAI_API_KEY='sk-...'\n"
-            "  agenix\n\n"
-            "Or:\n"
-            "  agenix --api-key 'sk-...'"
-        )
-
-    # Get base URL (optional)
-    base_url = args.base_url or os.getenv("OPENAI_BASE_URL")
-
-    # If no base URL and renderer available, ask if user wants to provide one
-    if not base_url and renderer:
-        from prompt_toolkit import prompt
-        from prompt_toolkit.validation import Validator
-
-        try:
-            response = prompt(
-                "Use custom API base URL? (leave empty for default): ",
-                default=""
-            ).strip()
-            if response:
-                base_url = response
-        except (EOFError, KeyboardInterrupt):
-            pass  # Use default
-
-    # Get model
-    model = args.model or get_default_model()
-
-    return api_key, base_url, model
-
-
 def main():
     """Main entry point."""
     args = parse_args()
+
+    # Handle auth commands
+    if args.command == "auth":
+        console = CLIRenderer()
+        console.render_error(
+            "Auth system not yet implemented.\n"
+            "For now, please use environment variables or settings.json:\n"
+            "  - AGENIX_API_KEY\n"
+            "  - AGENIX_MODEL\n"
+            "  - AGENIX_BASE_URL\n"
+            "Or create ~/.agenix/settings.json or .agenix/settings.json"
+        )
+        sys.exit(1)
 
     # Setup working directory
     working_dir = os.path.abspath(args.working_dir)
     if not os.path.exists(working_dir):
         print(f"Error: Working directory does not exist: {working_dir}")
         sys.exit(1)
+
+    # Load settings from all sources
+    cli_args_dict = {
+        "model": args.model,
+        "api_key": args.api_key,
+        "base_url": args.base_url,
+        "reasoning_effort": getattr(args, "reasoning_effort", None),
+        "max_turns": args.max_turns,
+        "max_tokens": args.max_tokens,
+        "temperature": getattr(args, "temperature", None),
+        "system_prompt": args.system_prompt,
+        "session": args.session,
+        "working_dir": working_dir,
+    }
+    # Remove None values
+    cli_args_dict = {k: v for k, v in cli_args_dict.items() if v is not None}
+
+    settings = Settings.load(working_dir=working_dir, cli_args=cli_args_dict)
 
     # Check if we have a direct message (non-interactive)
     is_interactive = not args.message
@@ -246,7 +249,6 @@ def main():
     cli = CLI() if is_interactive else None
 
     # Setup tools early so we can show them in banner
-    # Note: TaskTool will be added after Agent creation (needs agent_id)
     tools = [
         ReadTool(working_dir=working_dir),
         WriteTool(working_dir=working_dir),
@@ -257,24 +259,31 @@ def main():
         SkillTool(working_dir=working_dir),
     ]
 
-    # Initialize Agent Registry
-    # This loads all available agents from:
-    # 1. Built-in agents (agenix/agents/)
-    # 2. User global agents (~/.config/agenix/agents/)
-    # 3. Project local agents (.agenix/agents/)
-    AgentRegistry.initialize(
-        working_dir=Path(working_dir),
-        api_key=None,  # Will be set later after config validation
-        base_url=None
-    )
+    # Validate settings and prompt for missing values
+    if not settings.api_key:
+        if is_interactive and cli:
+            settings.api_key = cli.renderer.prompt_config_input(
+                "API Key",
+                "API key required (set AGENIX_API_KEY or use --api-key)",
+                is_secret=True
+            )
+        else:
+            print(
+                "Error: API key not found. Please set AGENIX_API_KEY environment variable,\n"
+                "create ~/.agenix/settings.json, or use --api-key parameter.\n\n"
+                "Example:\n"
+                "  export AGENIX_API_KEY='your-key'\n"
+                "  agenix\n\n"
+                "Or:\n"
+                "  agenix --api-key 'your-key'"
+            )
+            sys.exit(1)
 
-    # In interactive mode, show banner first, then ask for config if needed
+    if not settings.model:
+        settings.model = get_default_model()
+
+    # Show banner in interactive mode
     if is_interactive and cli:
-        # Try to get config without prompting
-        api_key = args.api_key or os.getenv("OPENAI_API_KEY")
-        base_url = args.base_url or os.getenv("OPENAI_BASE_URL")
-        model = args.model or get_default_model()
-
         # Get skills from SkillTool for banner
         try:
             skill_tool = next(t for t in tools if t.name == "skill")
@@ -283,46 +292,18 @@ def main():
         except (StopIteration, AttributeError):
             skills = []
 
-        # Show banner
-        cli.renderer.render_welcome(model=model, tools=tools, skills=skills)
-
-        # Now ask for config if needed
-        if not api_key:
-            api_key = cli.renderer.prompt_config_input(
-                "API Key",
-                "OpenAI-compatible API key required",
-                is_secret=True
-            )
-
-        if not base_url:
-            from prompt_toolkit import prompt
-            try:
-                response = prompt(
-                    "Use custom API base URL? (leave empty for default): ",
-                    default=""
-                ).strip()
-                if response:
-                    base_url = response
-            except (EOFError, KeyboardInterrupt):
-                pass  # Use default
-    else:
-        # Non-interactive mode
-        try:
-            api_key, base_url, model = validate_config(args)
-            skills = []  # Will be loaded later
-        except ValueError as e:
-            print(f"Configuration Error: {e}")
-            sys.exit(1)
+        cli.renderer.render_welcome(model=settings.model, tools=tools, skills=skills)
 
     # Setup agent
     try:
         config = AgentConfig(
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            system_prompt=args.system_prompt or get_default_system_prompt(tools),
-            max_turns=args.max_turns,
-            max_tokens=args.max_tokens,
+            model=settings.model,
+            api_key=settings.api_key,
+            base_url=settings.base_url,
+            system_prompt=settings.system_prompt or get_default_system_prompt(tools),
+            max_turns=settings.max_turns,
+            max_tokens=settings.max_tokens,
+            reasoning_effort=settings.reasoning_effort,
         )
         agent = Agent(config=config, tools=tools)
 
@@ -330,42 +311,36 @@ def main():
         task_tool = TaskTool(
             working_dir=working_dir,
             agent_id=agent.agent_id,
-            parent_chain=[]  # Main agent has no parents
+            parent_chain=[],
+            model=settings.model,
+            api_key=settings.api_key,
+            base_url=settings.base_url,
         )
         agent.tools.append(task_tool)
         agent.tool_map[task_tool.name] = task_tool
 
-        # Get skills list for UI (from SkillTool)
-        if is_interactive:
-            try:
-                skill_tool = next(t for t in tools if t.name == "skill")
-                skills = [{"name": name, "description": info.get("description", "")}
-                          for name, info in skill_tool._available_skills.items()]
-            except (StopIteration, AttributeError):
-                skills = []
     except Exception as e:
         if is_interactive and cli:
             cli.renderer.render_error(f"Error initializing agent: {e}")
-            sys.exit(1)
         else:
             print(f"Error initializing agent: {e}")
-            sys.exit(1)
+        sys.exit(1)
 
     # Setup session management
     session_manager = SessionManager()
 
     # Load session if specified
-    if args.session:
+    if settings.session:
         try:
-            messages = session_manager.load_session(args.session)
+            messages = session_manager.load_session(settings.session)
             agent.messages = messages
-            print(f"Loaded session: {args.session} ({len(messages)} messages)")
+            print(f"Loaded session: {settings.session} ({len(messages)} messages)")
         except Exception as e:
             print(f"Error loading session: {e}")
             sys.exit(1)
 
     # Subscribe to agent events for session persistence
-    current_session_id = args.session or session_manager.create_session()
+    current_session_id = settings.session or session_manager.create_session()
 
     def on_message_end(event):
         """Save messages to session."""
@@ -375,10 +350,20 @@ def main():
 
     agent.subscribe(on_message_end)
 
+    # Get skills for interactive mode
+    skills = []
+    if is_interactive:
+        try:
+            skill_tool = next(t for t in tools if t.name == "skill")
+            skills = [{"name": name, "description": info.get("description", "")}
+                      for name, info in skill_tool._available_skills.items()]
+        except (StopIteration, AttributeError):
+            pass
+
     # Run CLI
     if is_interactive:
-        # Interactive mode (banner already shown in main())
-        cli.run_interactive(agent, tools=tools, model=model, skills=skills, show_welcome=False)
+        # Interactive mode (banner already shown)
+        cli.run_interactive(agent, tools=tools, model=settings.model, skills=skills, show_welcome=False)
     else:
         # Non-interactive mode
         message = " ".join(args.message)

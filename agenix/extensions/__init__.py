@@ -1,14 +1,6 @@
-"""Extensions package - Agent registry, tool registry, and permissions."""
+"""Extensions package - Tool registry and event types."""
 
-from .agent_registry import AgentRegistry, AgentConfig
 from .tool_registry import ToolRegistry, ToolConfig
-from .permission import (
-    PermissionManager,
-    PermissionRuleset,
-    Rule,
-    PermissionDeniedError,
-    Action,
-)
 from .types import (
     EventType,
     Event,
@@ -38,18 +30,9 @@ from .loader import (
 from .runner import ExtensionRunner
 
 __all__ = [
-    # Agent Registry
-    "AgentRegistry",
-    "AgentConfig",
     # Tool Registry
     "ToolRegistry",
     "ToolConfig",
-    # Permission
-    "PermissionManager",
-    "PermissionRuleset",
-    "Rule",
-    "PermissionDeniedError",
-    "Action",
     # Types
     "EventType",
     "Event",

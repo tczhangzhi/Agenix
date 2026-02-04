@@ -1,13 +1,22 @@
-"""Unified LLM interface supporting multiple providers."""
+"""Unified LLM interface with LiteLLM for multi-provider support."""
 
 import json
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
-from .messages import (AssistantMessage, ImageContent, Message, TextContent,
-                       ToolCall, ToolResultMessage, Usage, UserMessage)
+from .messages import (
+    AssistantMessage,
+    ImageContent,
+    Message,
+    ReasoningContent,
+    TextContent,
+    ToolCall,
+    ToolResultMessage,
+    Usage,
+    UserMessage,
+)
 
 
 @dataclass
@@ -123,9 +132,7 @@ class LLMProvider(ABC):
 
     def _format_content(self, content: List[Any]) -> Union[str, List[Dict]]:
         """Format mixed content, preserving images."""
-        from .messages import TextContent, ImageContent
-
-        # Check if content is text-only (more generic than has_images)
+        # Check if content is text-only
         is_text_only = all(isinstance(item, TextContent) for item in content)
 
         if is_text_only:
@@ -150,7 +157,6 @@ class LLMProvider(ABC):
                 })
             else:
                 # Fallback for unknown content types: convert to text
-                # This allows future extensions without breaking
                 result.append({
                     "type": "text",
                     "text": str(item) if not hasattr(item, 'text') else item.text
@@ -159,22 +165,142 @@ class LLMProvider(ABC):
         return result
 
 
-class OpenAIProvider(LLMProvider):
-    """OpenAI/compatible API provider."""
+class LiteLLMProvider(LLMProvider):
+    """LiteLLM provider for multi-model support.
 
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
-        super().__init__(
-            api_key=api_key or os.getenv("OPENAI_API_KEY"),
-            base_url=base_url or os.getenv(
-                "OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    Supports multiple providers through LiteLLM:
+    - OpenAI (openai/gpt-4, gpt-4o, o1-*, etc.)
+    - Anthropic (anthropic/claude-*, claude-*)
+    - Google Gemini (gemini/gemini-*, gemini-*)
+    - OpenRouter (openrouter/*, auto-prefixed if sk-or-* key)
+    - Groq (groq/*)
+    - Custom endpoints (auto-detect provider from model name)
+    - Many others supported by LiteLLM
+
+    Environment variables:
+    - AGENIX_API_KEY: API key for the provider
+    - AGENIX_MODEL: Default model to use
+    - AGENIX_BASE_URL: Custom API base URL (optional)
+    - AGENIX_REASONING_EFFORT: Reasoning effort level (low/medium/high)
+    """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+    ):
+        """Initialize LiteLLM provider.
+
+        Args:
+            api_key: API key for the provider
+            base_url: Custom API base URL
+            model: Default model to use
+            reasoning_effort: Reasoning effort for thinking models (low/medium/high)
+        """
+        try:
+            import litellm
+            from litellm import acompletion
+            self._litellm = litellm
+            self._acompletion = acompletion
+        except ImportError:
+            raise ImportError(
+                "litellm package required. Install with: pip install litellm"
+            )
+
+        super().__init__(api_key=api_key, base_url=base_url)
+
+        self.default_model = model or os.getenv("AGENIX_MODEL", "gpt-4o")
+        self.reasoning_effort = reasoning_effort or os.getenv("AGENIX_REASONING_EFFORT")
+
+        # Detect provider from model name or API key or base_url
+        self.is_openrouter = (
+            (api_key and api_key.startswith("sk-or-"))
+            or (base_url and "openrouter" in base_url)
+            or self.default_model.startswith("openrouter/")
         )
 
-        # Validate API key
+        # Detect custom endpoint (but not openrouter)
+        self.is_custom_endpoint = bool(base_url) and not self.is_openrouter
+
+        # Configure LiteLLM
+        self._configure_litellm()
+
+        # Disable LiteLLM verbose logging
+        self._litellm.suppress_debug_info = True
+
+    def _configure_litellm(self):
+        """Configure LiteLLM based on provider."""
         if not self.api_key:
-            raise ValueError(
-                "OpenAI API key not found. Please set OPENAI_API_KEY environment variable "
-                "or pass api_key parameter."
-            )
+            return
+
+        # Set API key based on provider
+        if self.is_openrouter:
+            os.environ["OPENROUTER_API_KEY"] = self.api_key
+        elif self.is_custom_endpoint:
+            # For custom endpoints, detect provider from model name
+            if "claude" in self.default_model.lower() or "anthropic" in self.default_model.lower():
+                # Custom endpoint with Claude model (e.g., aihubmix)
+                os.environ["ANTHROPIC_API_KEY"] = self.api_key
+            else:
+                # Default to OpenAI-compatible
+                os.environ["OPENAI_API_KEY"] = self.api_key
+        elif "anthropic" in self.default_model or "claude" in self.default_model:
+            os.environ.setdefault("ANTHROPIC_API_KEY", self.api_key)
+        elif "openai" in self.default_model or "gpt" in self.default_model or "o1" in self.default_model:
+            os.environ.setdefault("OPENAI_API_KEY", self.api_key)
+        elif "gemini" in self.default_model.lower() or "google" in self.default_model.lower():
+            os.environ.setdefault("GEMINI_API_KEY", self.api_key)
+        elif "groq" in self.default_model:
+            os.environ.setdefault("GROQ_API_KEY", self.api_key)
+        else:
+            # Default to OpenAI-compatible
+            os.environ.setdefault("OPENAI_API_KEY", self.api_key)
+
+        # Set base URL if provided
+        if self.base_url:
+            self._litellm.api_base = self.base_url
+
+    def _normalize_model_name(self, model: str) -> str:
+        """Normalize model name for LiteLLM.
+
+        Args:
+            model: Raw model name
+
+        Returns:
+            Normalized model name with proper prefix
+        """
+        # OpenRouter
+        if self.is_openrouter and not model.startswith("openrouter/"):
+            return f"openrouter/{model}"
+
+        # Custom endpoint - detect provider from model name
+        if self.is_custom_endpoint:
+            # Don't add prefix if already has one
+            if "/" in model:
+                return model
+
+            # Detect provider from model name
+            if "claude" in model.lower():
+                return f"anthropic/{model}"
+            elif "gemini" in model.lower():
+                return f"gemini/{model}"
+            else:
+                # Default to openai/ for other custom endpoints
+                return f"openai/{model}"
+
+        # Gemini
+        if "gemini" in model.lower() and not model.startswith("gemini/"):
+            return f"gemini/{model}"
+
+        # Anthropic/Claude
+        if "claude" in model and not (
+            model.startswith("anthropic/") or model.startswith("claude-")
+        ):
+            return f"anthropic/{model}"
+
+        return model
 
     async def stream(
         self,
@@ -184,62 +310,112 @@ class OpenAIProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         max_tokens: int = 4096,
     ) -> AsyncIterator[StreamEvent]:
-        """Stream OpenAI responses."""
-        try:
-            import openai
-        except ImportError:
-            raise ImportError(
-                "openai package required. Install with: pip install openai")
+        """Stream responses using LiteLLM.
+
+        Args:
+            model: Model name
+            messages: List of messages
+            system_prompt: System prompt
+            tools: Tool definitions
+            max_tokens: Maximum tokens
+
+        Yields:
+            StreamEvent instances
+        """
+        model = self._normalize_model_name(model)
+
+        # Build API messages
+        api_messages = []
+        if system_prompt:
+            api_messages.append({"role": "system", "content": system_prompt})
+        api_messages.extend(self._messages_to_dict(messages))
+
+        # Build kwargs
+        kwargs = {
+            "model": model,
+            "messages": api_messages,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+
+        if self.base_url:
+            kwargs["api_base"] = self.base_url
+
+        if tools:
+            kwargs["tools"] = [self._convert_tool(t) for t in tools]
+            kwargs["tool_choice"] = "auto"
+
+        # Add reasoning effort for OpenAI o1 models
+        if self.reasoning_effort and "o1" in model:
+            kwargs["reasoning_effort"] = self.reasoning_effort
 
         try:
-            client = openai.AsyncOpenAI(
-                api_key=self.api_key, base_url=self.base_url)
-        except Exception as e:
-            raise ValueError(f"Failed to create OpenAI client: {e}")
+            response = await self._acompletion(**kwargs)
 
-        try:
-            api_messages = []
-            if system_prompt:
-                api_messages.append(
-                    {"role": "system", "content": system_prompt})
-            api_messages.extend(self._messages_to_dict(messages))
+            # Accumulate tool calls and reasoning
+            tool_calls_accumulator = {}
+            reasoning_buffer = {}
+            finish_reason = None
 
-            kwargs = {
-                "model": model,
-                "messages": api_messages,
-                "max_tokens": max_tokens,
-                "stream": True,
-            }
-
-            if tools:
-                kwargs["tools"] = [self._convert_tool(t) for t in tools]
-
-            stream = await client.chat.completions.create(**kwargs)
-
-            # Accumulate tool calls during streaming
-            tool_calls_accumulator = {}  # index -> {id, name, arguments_str}
-            finish_reason = None  # Capture finish reason from last chunk
-
-            async for chunk in stream:
-                if not chunk.choices:
+            async for chunk in response:
+                if not hasattr(chunk, "choices") or not chunk.choices:
                     continue
 
                 choice = chunk.choices[0]
-                delta = choice.delta
 
-                # Capture finish_reason when available
-                if choice.finish_reason:
+                # Capture finish reason
+                if hasattr(choice, "finish_reason") and choice.finish_reason:
                     finish_reason = choice.finish_reason
 
-                if delta.content:
+                delta = choice.delta if hasattr(choice, "delta") else None
+                if not delta:
+                    continue
+
+                # Handle text delta
+                if hasattr(delta, "content") and delta.content:
                     yield StreamEvent(type="text_delta", delta=delta.content)
 
-                if delta.tool_calls:
+                # Handle reasoning/thinking content
+                reasoning_text = None
+                reasoning_id = "reasoning_0"
+
+                # Check for various thinking/reasoning attributes
+                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                    reasoning_text = delta.reasoning_content
+                elif hasattr(delta, "thinking_blocks") and delta.thinking_blocks:
+                    # thinking_blocks is a list of dicts with 'thinking' field
+                    if isinstance(delta.thinking_blocks, list):
+                        thinking_texts = []
+                        for block in delta.thinking_blocks:
+                            if isinstance(block, dict) and 'thinking' in block:
+                                thinking_text = block['thinking']
+                                # Skip empty or signature-only blocks
+                                if thinking_text and thinking_text.strip():
+                                    thinking_texts.append(thinking_text)
+                        if thinking_texts:
+                            reasoning_text = "\n".join(thinking_texts)
+                    else:
+                        reasoning_text = str(delta.thinking_blocks)
+                elif hasattr(delta, "reasoning") and delta.reasoning:
+                    reasoning_text = delta.reasoning
+
+                if reasoning_text:
+                    if reasoning_id not in reasoning_buffer:
+                        reasoning_buffer[reasoning_id] = ""
+
+                    reasoning_buffer[reasoning_id] += reasoning_text
+                    yield StreamEvent(
+                        type="reasoning_delta",
+                        delta=reasoning_text,
+                        reasoning_block_id=reasoning_id
+                    )
+                    continue  # Skip text delta handling for this chunk
+
+                # Handle tool calls
+                if hasattr(delta, "tool_calls") and delta.tool_calls:
                     for tc in delta.tool_calls:
-                        # Tool calls come in increments, need to accumulate
-                        # Use index as key since id might not be in every delta
-                        tc_index = tc.index if tc.index is not None else 0
-                        tc_id = tc.id or f"call_{tc_index}"
+                        tc_index = tc.index if hasattr(tc, "index") and tc.index is not None else 0
+                        tc_id = tc.id if hasattr(tc, "id") else f"call_{tc_index}"
 
                         if tc_index not in tool_calls_accumulator:
                             tool_calls_accumulator[tc_index] = {
@@ -248,32 +424,23 @@ class OpenAIProvider(LLMProvider):
                                 "arguments": ""
                             }
 
-                        # Update id if provided
-                        if tc.id:
+                        if hasattr(tc, "id") and tc.id:
                             tool_calls_accumulator[tc_index]["id"] = tc.id
 
-                        if tc.function:
-                            if tc.function.name:
+                        if hasattr(tc, "function") and tc.function:
+                            if hasattr(tc.function, "name") and tc.function.name:
                                 tool_calls_accumulator[tc_index]["name"] = tc.function.name
-                            if tc.function.arguments:
+                            if hasattr(tc.function, "arguments") and tc.function.arguments:
                                 tool_calls_accumulator[tc_index]["arguments"] += tc.function.arguments
 
-            # After stream ends, yield complete tool calls
+            # Yield complete tool calls
             for tc_data in tool_calls_accumulator.values():
-                # Parse arguments - no repair, let LLM retry on failure
                 if not tc_data["arguments"] or not tc_data["arguments"].strip():
-                    # Empty arguments
                     arguments = {}
                 else:
                     try:
                         arguments = json.loads(tc_data["arguments"])
-                    except json.JSONDecodeError as e:
-                        # JSON parsing failed - return empty dict, LLM will see error and retry
-                        import sys
-                        args_preview = tc_data["arguments"][:100] if len(tc_data["arguments"]) > 100 else tc_data["arguments"]
-                        print(f"Warning: Invalid JSON for tool '{tc_data['name']}': {args_preview}",
-                              file=sys.stderr)
-                        print(f"  Error: {e}", file=sys.stderr)
+                    except json.JSONDecodeError:
                         arguments = {}
 
                 yield StreamEvent(
@@ -285,15 +452,18 @@ class OpenAIProvider(LLMProvider):
                     )
                 )
 
-            # Yield finish_reason as final event
+            # Yield finish reason
             if finish_reason:
                 yield StreamEvent(type="finish", finish_reason=finish_reason)
+
         except Exception as e:
-            # Re-raise to be handled by caller
+            # Log error for debugging
+            import sys
+            print(f"\n❌ LiteLLM Error: {type(e).__name__}: {str(e)}", file=sys.stderr)
+            print(f"Model: {model}", file=sys.stderr)
+            print(f"Base URL: {self.base_url}", file=sys.stderr)
+            # Re-raise to let caller handle
             raise
-        finally:
-            # Close the client properly
-            await client.close()
 
     async def complete(
         self,
@@ -303,55 +473,83 @@ class OpenAIProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         max_tokens: int = 4096,
     ) -> AssistantMessage:
-        """Complete OpenAI request."""
-        try:
-            import openai
-        except ImportError:
-            raise ImportError(
-                "openai package required. Install with: pip install openai")
+        """Complete request using LiteLLM.
+
+        Args:
+            model: Model name
+            messages: List of messages
+            system_prompt: System prompt
+            tools: Tool definitions
+            max_tokens: Maximum tokens
+
+        Returns:
+            AssistantMessage with response
+        """
+        model = self._normalize_model_name(model)
+
+        # Build API messages
+        api_messages = []
+        if system_prompt:
+            api_messages.append({"role": "system", "content": system_prompt})
+        api_messages.extend(self._messages_to_dict(messages))
+
+        # Build kwargs
+        kwargs = {
+            "model": model,
+            "messages": api_messages,
+            "max_tokens": max_tokens,
+        }
+
+        if self.base_url:
+            kwargs["api_base"] = self.base_url
+
+        if tools:
+            kwargs["tools"] = [self._convert_tool(t) for t in tools]
+            kwargs["tool_choice"] = "auto"
+
+        # Add reasoning effort for OpenAI o1 models
+        if self.reasoning_effort and "o1" in model:
+            kwargs["reasoning_effort"] = self.reasoning_effort
 
         try:
-            client = openai.AsyncOpenAI(
-                api_key=self.api_key, base_url=self.base_url)
-        except Exception as e:
-            raise ValueError(f"Failed to create OpenAI client: {e}")
+            response = await self._acompletion(**kwargs)
 
-        try:
-            api_messages = []
-            if system_prompt:
-                api_messages.append(
-                    {"role": "system", "content": system_prompt})
-            api_messages.extend(self._messages_to_dict(messages))
-
-            kwargs = {
-                "model": model,
-                "messages": api_messages,
-                "max_tokens": max_tokens,
-            }
-
-            if tools:
-                kwargs["tools"] = [self._convert_tool(t) for t in tools]
-
-            response = await client.chat.completions.create(**kwargs)
             choice = response.choices[0]
+            message = choice.message
 
-            # Build assistant message
+            # Build content
             content_parts = []
             tool_calls = []
 
-            if choice.message.content:
-                content_parts.append(TextContent(text=choice.message.content))
+            if hasattr(message, "content") and message.content:
+                content_parts.append(TextContent(text=message.content))
 
-            if choice.message.tool_calls:
-                for tc in choice.message.tool_calls:
+            # Handle reasoning/thinking
+            if hasattr(message, "reasoning") and message.reasoning:
+                content_parts.append(ReasoningContent(
+                    text=message.reasoning,
+                    reasoning_id="reasoning"
+                ))
+
+            # Handle tool calls
+            if hasattr(message, "tool_calls") and message.tool_calls:
+                for tc in message.tool_calls:
+                    args = tc.function.arguments
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            args = {}
+
                     tool_calls.append(ToolCall(
                         id=tc.id,
                         name=tc.function.name,
-                        arguments=json.loads(tc.function.arguments)
+                        arguments=args
                     ))
 
+            # Handle usage
             usage = None
-            if response.usage:
+            if hasattr(response, "usage") and response.usage:
                 usage = Usage(
                     input_tokens=response.usage.prompt_tokens,
                     output_tokens=response.usage.completion_tokens,
@@ -362,11 +560,16 @@ class OpenAIProvider(LLMProvider):
                 tool_calls=tool_calls,
                 model=model,
                 usage=usage,
-                stop_reason=choice.finish_reason,
+                stop_reason=choice.finish_reason or "stop",
             )
-        finally:
-            # Close the client properly
-            await client.close()
+
+        except Exception as e:
+            # Log error for debugging
+            import sys
+            print(f"\n❌ LiteLLM Error: {type(e).__name__}: {str(e)}", file=sys.stderr)
+            print(f"Model: {model}", file=sys.stderr)
+            print(f"Base URL: {self.base_url}", file=sys.stderr)
+            raise
 
     def _convert_tool(self, tool: Dict[str, Any]) -> Dict[str, Any]:
         """Convert tool definition to OpenAI format."""
@@ -380,346 +583,27 @@ class OpenAIProvider(LLMProvider):
         }
 
 
-class AnthropicProvider(LLMProvider):
-    """Anthropic Claude API provider."""
+# Default provider
+def get_provider(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+) -> LLMProvider:
+    """Get LiteLLM provider instance.
 
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
-        super().__init__(
-            api_key=api_key or os.getenv("ANTHROPIC_API_KEY"),
-            base_url=base_url
-        )
+    Args:
+        api_key: API key for the provider
+        base_url: Custom API base URL
+        model: Default model to use
+        reasoning_effort: Reasoning effort for thinking models
 
-        # Validate API key
-        if not self.api_key:
-            raise ValueError(
-                "Anthropic API key not found. Please set ANTHROPIC_API_KEY environment variable "
-                "or pass api_key parameter."
-            )
-
-        # Clean up base_url: Anthropic API doesn't use /v1 suffix
-        if self.base_url and self.base_url.endswith("/v1"):
-            self.base_url = self.base_url[:-3]  # Remove /v1
-
-    async def stream(
-        self,
-        model: str,
-        messages: List[Message],
-        system_prompt: Optional[str] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        max_tokens: int = 4096,
-    ) -> AsyncIterator[StreamEvent]:
-        """Stream Anthropic responses."""
-        try:
-            import anthropic
-        except ImportError:
-            raise ImportError(
-                "anthropic package required. Install with: pip install anthropic")
-
-        try:
-            kwargs = {"api_key": self.api_key}
-            if self.base_url:
-                kwargs["base_url"] = self.base_url
-            client = anthropic.AsyncAnthropic(**kwargs)
-        except Exception as e:
-            raise ValueError(f"Failed to create Anthropic client: {e}")
-
-        kwargs = {
-            "model": model,
-            "messages": self._anthropic_messages(messages),
-            "max_tokens": max_tokens,
-        }
-
-        if system_prompt:
-            kwargs["system"] = system_prompt
-
-        if tools:
-            kwargs["tools"] = [self._convert_tool(t) for t in tools]
-
-        # Enable thinking for models that support it
-        if "think" in model.lower():
-            # Thinking requires:
-            # 1. budget_tokens >= 1024
-            # 2. max_tokens > budget_tokens
-            # Reserve at least 2048 tokens for output (1024 thinking + 1024 response)
-            if max_tokens >= 2048:
-                thinking_budget = min(10000, max_tokens - 1024)
-                if thinking_budget >= 1024:
-                    kwargs["thinking"] = {
-                        "type": "enabled",
-                        "budget_tokens": thinking_budget
-                    }
-
-        async with client.messages.stream(**kwargs) as stream:
-            # Track tool calls being built
-            tool_calls_map = {}
-            # Track reasoning blocks
-            reasoning_buffer = {}
-
-            async for event in stream:
-                if event.type == "content_block_start":
-                    if hasattr(event.content_block, "type"):
-                        if event.content_block.type == "tool_use":
-                            # Tool call started - initialize tracking
-                            tool_calls_map[event.index] = {
-                                "id": event.content_block.id,
-                                "name": event.content_block.name,
-                                "input": ""
-                            }
-                        elif event.content_block.type == "thinking":
-                            # Reasoning block started
-                            reasoning_buffer[event.index] = {
-                                "id": f"reasoning_{event.index}",
-                                "content": ""
-                            }
-
-                elif event.type == "content_block_delta":
-                    if hasattr(event.delta, "text"):
-                        # Check if this is reasoning text
-                        if event.index in reasoning_buffer:
-                            # This is reasoning content
-                            delta_text = event.delta.text
-                            reasoning_buffer[event.index]["content"] += delta_text
-                            yield StreamEvent(
-                                type="reasoning_delta",
-                                delta=delta_text,
-                                reasoning_block_id=reasoning_buffer[event.index]["id"]
-                            )
-                        else:
-                            # Regular text content
-                            yield StreamEvent(type="text_delta", delta=event.delta.text)
-                    elif hasattr(event.delta, "thinking"):
-                        # ThinkingDelta - has .thinking instead of .text
-                        if event.index in reasoning_buffer:
-                            delta_text = event.delta.thinking
-                            reasoning_buffer[event.index]["content"] += delta_text
-                            yield StreamEvent(
-                                type="reasoning_delta",
-                                delta=delta_text,
-                                reasoning_block_id=reasoning_buffer[event.index]["id"]
-                            )
-                    elif hasattr(event.delta, "partial_json"):
-                        # Tool call input in progress
-                        if event.index in tool_calls_map:
-                            tool_calls_map[event.index]["input"] += event.delta.partial_json
-
-                elif event.type == "content_block_stop":
-                    # Content block finished
-                    if event.index in tool_calls_map:
-                        # Tool call completed - parse JSON and yield
-                        import json
-                        tool_data = tool_calls_map[event.index]
-                        try:
-                            arguments = json.loads(tool_data["input"])
-                        except json.JSONDecodeError:
-                            arguments = {}
-
-                        yield StreamEvent(
-                            type="tool_call",
-                            tool_call=ToolCall(
-                                id=tool_data["id"],
-                                name=tool_data["name"],
-                                arguments=arguments
-                            )
-                        )
-                    elif event.index in reasoning_buffer:
-                        # Reasoning block completed - just clean up, will be handled by agent
-                        pass
-
-            # Get final message to extract stop_reason
-            final_message = await stream.get_final_message()
-            if final_message and hasattr(final_message, 'stop_reason'):
-                # Map Anthropic stop_reason to OpenAI-style
-                # Anthropic: "end_turn", "max_tokens", "stop_sequence", "tool_use"
-                # OpenAI: "stop", "length", "content_filter", "tool_calls"
-                stop_reason_map = {
-                    "end_turn": "stop",
-                    "max_tokens": "length",
-                    "tool_use": "tool_calls",
-                    "stop_sequence": "stop"
-                }
-                finish_reason = stop_reason_map.get(final_message.stop_reason, final_message.stop_reason)
-                yield StreamEvent(type="finish", finish_reason=finish_reason)
-
-    async def complete(
-        self,
-        model: str,
-        messages: List[Message],
-        system_prompt: Optional[str] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        max_tokens: int = 4096,
-    ) -> AssistantMessage:
-        """Complete Anthropic request."""
-        try:
-            import anthropic
-        except ImportError:
-            raise ImportError(
-                "anthropic package required. Install with: pip install anthropic")
-
-        try:
-            kwargs = {"api_key": self.api_key}
-            if self.base_url:
-                kwargs["base_url"] = self.base_url
-            client = anthropic.AsyncAnthropic(**kwargs)
-        except Exception as e:
-            raise ValueError(f"Failed to create Anthropic client: {e}")
-
-        kwargs = {
-            "model": model,
-            "messages": self._anthropic_messages(messages),
-            "max_tokens": max_tokens,
-        }
-
-        if system_prompt:
-            kwargs["system"] = system_prompt
-
-        if tools:
-            kwargs["tools"] = [self._convert_tool(t) for t in tools]
-
-        # Enable thinking for models that support it
-        if "think" in model.lower():
-            # Thinking requires:
-            # 1. budget_tokens >= 1024
-            # 2. max_tokens > budget_tokens
-            # Reserve at least 2048 tokens for output (1024 thinking + 1024 response)
-            if max_tokens >= 2048:
-                thinking_budget = min(10000, max_tokens - 1024)
-                if thinking_budget >= 1024:
-                    kwargs["thinking"] = {
-                        "type": "enabled",
-                        "budget_tokens": thinking_budget
-                    }
-
-        response = await client.messages.create(**kwargs)
-
-        # Parse response
-        content_parts = []
-        tool_calls = []
-
-        for block in response.content:
-            if block.type == "text":
-                content_parts.append(TextContent(text=block.text))
-            elif block.type == "thinking":
-                # Add thinking content as ReasoningContent
-                from .messages import ReasoningContent
-                content_parts.append(ReasoningContent(
-                    text=block.thinking,
-                    reasoning_id="thinking"
-                ))
-            elif block.type == "tool_use":
-                tool_calls.append(ToolCall(
-                    id=block.id,
-                    name=block.name,
-                    arguments=block.input
-                ))
-
-        usage = None
-        if response.usage:
-            usage = Usage(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-            )
-
-        return AssistantMessage(
-            content=content_parts,
-            tool_calls=tool_calls,
-            model=model,
-            usage=usage,
-            stop_reason=response.stop_reason,
-        )
-
-    def _anthropic_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
-        """Convert messages to Anthropic format."""
-        result = []
-        for msg in messages:
-            if isinstance(msg, UserMessage):
-                result.append({
-                    "role": "user",
-                    "content": msg.content if isinstance(msg.content, str) else self._format_content(msg.content)
-                })
-            elif isinstance(msg, AssistantMessage):
-                content = []
-                # Add text content
-                if isinstance(msg.content, str):
-                    content.append({"type": "text", "text": msg.content})
-                else:
-                    for item in msg.content:
-                        if isinstance(item, TextContent):
-                            content.append({"type": "text", "text": item.text})
-
-                # Add tool calls
-                for tc in msg.tool_calls:
-                    content.append({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": tc.arguments
-                    })
-
-                result.append({"role": "assistant", "content": content})
-            elif isinstance(msg, ToolResultMessage):
-                content = msg.content
-
-                # Handle mixed content with images
-                if isinstance(content, list):
-                    tool_result_content = []
-                    for item in content:
-                        if isinstance(item, TextContent):
-                            tool_result_content.append({
-                                "type": "text",
-                                "text": item.text
-                            })
-                        elif isinstance(item, ImageContent):
-                            # Anthropic native image format
-                            tool_result_content.append({
-                                "type": "image",
-                                "source": item.source  # Already in correct format!
-                            })
-
-                    result.append({
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": msg.tool_call_id,
-                                "content": tool_result_content,  # List of text/image blocks
-                                "is_error": msg.is_error
-                            }
-                        ]
-                    })
-                else:
-                    # Simple string content - existing logic
-                    result.append({
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": msg.tool_call_id,
-                                "content": content,
-                                "is_error": msg.is_error
-                            }
-                        ]
-                    })
-        return result
-
-    def _convert_tool(self, tool: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert tool definition to Anthropic format."""
-        return {
-            "name": tool["name"],
-            "description": tool["description"],
-            "input_schema": tool.get("parameters", {})
-        }
-
-
-# Registry of providers
-PROVIDERS = {
-    "openai": OpenAIProvider,
-    "anthropic": AnthropicProvider,
-}
-
-
-def get_provider(provider_name: str, **kwargs) -> LLMProvider:
-    """Get LLM provider by name."""
-    provider_class = PROVIDERS.get(provider_name)
-    if not provider_class:
-        raise ValueError(f"Unknown provider: {provider_name}")
-    return provider_class(**kwargs)
+    Returns:
+        LiteLLMProvider instance
+    """
+    return LiteLLMProvider(
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    )

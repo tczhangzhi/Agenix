@@ -41,19 +41,21 @@ class MockTool(Tool):
 class TestAgentConfig:
     """Test AgentConfig dataclass."""
 
-    def test_create_minimal_config(self):
+    def test_create_minimal_config(self, mock_provider):
         """Test creating minimal config."""
         config = AgentConfig(
             model="gpt-3.5-turbo",
-            api_key="test-key"
+            api_key="test-key",
+            provider=mock_provider
         )
 
         assert config.model == "gpt-3.5-turbo"
         assert config.api_key == "test-key"
         assert config.max_turns == 10  # Default
         assert config.max_tokens == 16384  # Default
+        assert config.provider is not None
 
-    def test_create_full_config(self):
+    def test_create_full_config(self, mock_provider):
         """Test creating full config with all options."""
         config = AgentConfig(
             model="gpt-4",
@@ -62,7 +64,8 @@ class TestAgentConfig:
             system_prompt="You are helpful",
             max_turns=20,
             max_tool_calls_per_turn=10,
-            max_tokens=8192
+            max_tokens=8192,
+            provider=mock_provider
         )
 
         assert config.model == "gpt-4"
@@ -72,9 +75,13 @@ class TestAgentConfig:
         assert config.max_tool_calls_per_turn == 10
         assert config.max_tokens == 8192
 
-    def test_config_defaults(self):
+    def test_config_defaults(self, mock_provider):
         """Test default configuration values."""
-        config = AgentConfig(model="gpt-3.5-turbo", api_key="key")
+        config = AgentConfig(
+            model="gpt-3.5-turbo",
+            api_key="key",
+            provider=mock_provider
+        )
 
         assert config.system_prompt is None
         assert config.base_url is None
@@ -86,11 +93,12 @@ class TestAgentConfig:
 class TestAgentInitialization:
     """Test Agent initialization."""
 
-    def test_create_agent_minimal(self):
+    def test_create_agent_minimal(self, mock_provider):
         """Test creating agent with minimal config."""
         config = AgentConfig(
             model="gpt-3.5-turbo",
-            api_key="test-key"
+            api_key="test-key",
+            provider=mock_provider
         )
         agent = Agent(config=config, tools=[])
 
@@ -98,11 +106,12 @@ class TestAgentInitialization:
         assert agent.messages == []
         assert agent.tool_map == {}
 
-    def test_create_agent_with_tools(self):
+    def test_create_agent_with_tools(self, mock_provider):
         """Test creating agent with tools."""
         config = AgentConfig(
             model="gpt-3.5-turbo",
-            api_key="test-key"
+            api_key="test-key",
+            provider=mock_provider
         )
         mock_tool = MockTool()
         agent = Agent(config=config, tools=[mock_tool])
@@ -111,11 +120,12 @@ class TestAgentInitialization:
         assert "mock_tool" in agent.tool_map
         assert agent.tool_map["mock_tool"] == mock_tool
 
-    def test_create_agent_with_multiple_tools(self):
+    def test_create_agent_with_multiple_tools(self, mock_provider):
         """Test creating agent with multiple tools."""
         config = AgentConfig(
             model="gpt-3.5-turbo",
-            api_key="test-key"
+            api_key="test-key",
+            provider=mock_provider
         )
 
         class Tool1(MockTool):
@@ -139,17 +149,25 @@ class TestAgentInitialization:
 class TestAgentMessages:
     """Test Agent message handling."""
 
-    def test_initial_messages_empty(self):
+    def test_initial_messages_empty(self, mock_provider):
         """Test that agent starts with empty messages."""
-        config = AgentConfig(model="gpt-3.5-turbo", api_key="key")
+        config = AgentConfig(
+            model="gpt-3.5-turbo",
+            api_key="key",
+            provider=mock_provider
+        )
         agent = Agent(config=config, tools=[])
 
         assert agent.messages == []
         assert len(agent.messages) == 0
 
-    def test_add_user_message(self):
+    def test_add_user_message(self, mock_provider):
         """Test adding user message."""
-        config = AgentConfig(model="gpt-3.5-turbo", api_key="key")
+        config = AgentConfig(
+            model="gpt-3.5-turbo",
+            api_key="key",
+            provider=mock_provider
+        )
         agent = Agent(config=config, tools=[])
 
         message = UserMessage(content="Hello")
@@ -158,9 +176,13 @@ class TestAgentMessages:
         assert len(agent.messages) == 1
         assert isinstance(agent.messages[0], UserMessage)
 
-    def test_add_assistant_message(self):
+    def test_add_assistant_message(self, mock_provider):
         """Test adding assistant message."""
-        config = AgentConfig(model="gpt-3.5-turbo", api_key="key")
+        config = AgentConfig(
+            model="gpt-3.5-turbo",
+            api_key="key",
+            provider=mock_provider
+        )
         agent = Agent(config=config, tools=[])
 
         message = AssistantMessage(content=[TextContent(text="Hi there")])
@@ -173,18 +195,26 @@ class TestAgentMessages:
 class TestAgentToolMap:
     """Test Agent tool mapping."""
 
-    def test_tool_map_construction(self):
+    def test_tool_map_construction(self, mock_provider):
         """Test that tool map is constructed correctly."""
-        config = AgentConfig(model="gpt-3.5-turbo", api_key="key")
+        config = AgentConfig(
+            model="gpt-3.5-turbo",
+            api_key="key",
+            provider=mock_provider
+        )
         tool = MockTool()
         agent = Agent(config=config, tools=[tool])
 
         assert "mock_tool" in agent.tool_map
         assert agent.tool_map["mock_tool"] is tool
 
-    def test_tool_map_with_duplicate_names(self):
+    def test_tool_map_with_duplicate_names(self, mock_provider):
         """Test tool map with duplicate tool names."""
-        config = AgentConfig(model="gpt-3.5-turbo", api_key="key")
+        config = AgentConfig(
+            model="gpt-3.5-turbo",
+            api_key="key",
+            provider=mock_provider
+        )
 
         tool1 = MockTool()
         tool2 = MockTool()  # Same name
@@ -199,34 +229,37 @@ class TestAgentToolMap:
 class TestAgentConfiguration:
     """Test Agent configuration options."""
 
-    def test_system_prompt_configuration(self):
+    def test_system_prompt_configuration(self, mock_provider):
         """Test that system prompt is configured."""
         config = AgentConfig(
             model="gpt-3.5-turbo",
             api_key="key",
-            system_prompt="You are a helpful assistant"
+            system_prompt="You are a helpful assistant",
+            provider=mock_provider
         )
         agent = Agent(config=config, tools=[])
 
         assert agent.config.system_prompt == "You are a helpful assistant"
 
-    def test_max_turns_configuration(self):
+    def test_max_turns_configuration(self, mock_provider):
         """Test max turns configuration."""
         config = AgentConfig(
             model="gpt-3.5-turbo",
             api_key="key",
-            max_turns=5
+            max_turns=5,
+            provider=mock_provider
         )
         agent = Agent(config=config, tools=[])
 
         assert agent.config.max_turns == 5
 
-    def test_max_tokens_configuration(self):
+    def test_max_tokens_configuration(self, mock_provider):
         """Test max tokens configuration."""
         config = AgentConfig(
             model="gpt-3.5-turbo",
             api_key="key",
-            max_tokens=4096
+            max_tokens=4096,
+            provider=mock_provider
         )
         agent = Agent(config=config, tools=[])
 
@@ -236,9 +269,13 @@ class TestAgentConfiguration:
 class TestAgentEventSystem:
     """Test Agent event subscription."""
 
-    def test_subscribe_to_events(self):
+    def test_subscribe_to_events(self, mock_provider):
         """Test subscribing to agent events."""
-        config = AgentConfig(model="gpt-3.5-turbo", api_key="key")
+        config = AgentConfig(
+            model="gpt-3.5-turbo",
+            api_key="key",
+            provider=mock_provider
+        )
         agent = Agent(config=config, tools=[])
 
         events_received = []
@@ -251,9 +288,13 @@ class TestAgentEventSystem:
         # Verify subscription doesn't crash
         assert True  # If we got here, subscription worked
 
-    def test_multiple_subscribers(self):
+    def test_multiple_subscribers(self, mock_provider):
         """Test multiple event subscribers."""
-        config = AgentConfig(model="gpt-3.5-turbo", api_key="key")
+        config = AgentConfig(
+            model="gpt-3.5-turbo",
+            api_key="key",
+            provider=mock_provider
+        )
         agent = Agent(config=config, tools=[])
 
         events1 = []

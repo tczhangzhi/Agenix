@@ -6,15 +6,6 @@ temperature: 0.5
 max_tokens: 8192
 max_turns: 5
 max_tool_calls_per_turn: 15
-permissions:
-  read: allow
-  grep: allow
-  glob: allow
-  write: deny
-  edit: deny
-  bash: deny
-  skill: deny
-  task: deny
 ---
 
 # Explore Agent

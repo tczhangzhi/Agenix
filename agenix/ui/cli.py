@@ -38,6 +38,7 @@ class CLIRenderer:
         self.in_live_mode = False
         self.tool_output_lines = []  # Store tool output lines
         self.current_reasoning = {}  # Track reasoning blocks
+        self.reasoning_just_ended = False  # Track if reasoning just ended
 
         # Initialize prompt session with better unicode support
         self.prompt_session = PromptSession(
@@ -62,10 +63,10 @@ class CLIRenderer:
                 self.console.print(f"[dim]{event.delta}[/dim]", end="")
 
         elif isinstance(event, ReasoningEndEvent):
-            # Add newline after reasoning, before text
-            if event.content:
-                self.console.print()  # Newline to separate from text
+            # Mark that reasoning just ended, but don't add newline yet
+            # We'll decide whether to add a newline when the next event comes
             if event.reasoning_id in self.current_reasoning:
+                self.reasoning_just_ended = True
                 del self.current_reasoning[event.reasoning_id]
 
         elif isinstance(event, MessageStartEvent):
@@ -74,8 +75,14 @@ class CLIRenderer:
             # Print indicator for Assistant message (Claude Code style)
             self.console.print()
             self.console.print("⏺ ", end="")
+            self.reasoning_just_ended = False  # Reset flag
 
         elif isinstance(event, MessageUpdateEvent):
+            # If reasoning just ended, add a blank line before text
+            if self.reasoning_just_ended:
+                self.console.print("\n")  # Add blank line
+                self.reasoning_just_ended = False
+
             # Accumulate message and stream output in real-time
             self.current_message += event.delta
             self.message_buffer.append(event.delta)
@@ -93,6 +100,8 @@ class CLIRenderer:
             self.current_tool = event.tool_name
             self.current_tool_args = event.args if hasattr(event, 'args') else None
             self.tool_output_lines = []
+            # Reset reasoning flag - tools don't need blank line after reasoning
+            self.reasoning_just_ended = False
             # Display tool invocation in Claude Code style
             self.console.print()
             args_str = self._format_tool_args(event.tool_name, event.args)

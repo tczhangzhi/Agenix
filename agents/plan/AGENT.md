@@ -6,19 +6,6 @@ temperature: 0.7
 max_tokens: 16384
 max_turns: 8
 max_tool_calls_per_turn: 15
-permissions:
-  read: allow
-  grep: allow
-  glob: allow
-  write:
-    ".agenix/plans/*.md": allow
-    "*": deny
-  edit:
-    ".agenix/plans/*.md": allow
-    "*": deny
-  bash: deny
-  skill: allow
-  task: allow
 ---
 
 # Plan Agent

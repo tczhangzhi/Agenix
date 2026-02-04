@@ -13,7 +13,7 @@ from agenix.core.llm import StreamEvent
 class TestMaxTokensContinuation:
     """Test cases for max_tokens continuation."""
 
-    def test_finish_reason_captured_in_stream_event(self):
+    def test_finish_reason_captured_in_stream_event(self, mock_provider):
         """Test that StreamEvent can hold finish_reason."""
         event = StreamEvent(
             type="finish",
@@ -22,7 +22,7 @@ class TestMaxTokensContinuation:
 
         assert event.finish_reason == "length"
 
-    def test_stop_reason_length_triggers_continuation(self):
+    def test_stop_reason_length_triggers_continuation(self, mock_provider):
         """Test that stop_reason='length' allows loop to continue."""
         # Create a message with stop_reason="length"
         message = AssistantMessage(
@@ -39,7 +39,7 @@ class TestMaxTokensContinuation:
 
         assert should_continue, "Loop should continue when stop_reason is 'length'"
 
-    def test_stop_reason_stop_ends_loop(self):
+    def test_stop_reason_stop_ends_loop(self, mock_provider):
         """Test that stop_reason='stop' ends the loop."""
         message = AssistantMessage(
             content=[TextContent(text="Complete output.")],
@@ -54,7 +54,7 @@ class TestMaxTokensContinuation:
 
         assert not should_continue, "Loop should end when stop_reason is 'stop'"
 
-    def test_tool_calls_trigger_continuation(self):
+    def test_tool_calls_trigger_continuation(self, mock_provider):
         """Test that tool_calls still trigger continuation."""
         message = AssistantMessage(
             content=[],
@@ -76,7 +76,7 @@ class TestMaxTokensContinuation:
 
         assert should_continue, "Loop should continue when there are tool_calls"
 
-    def test_anthropic_stop_reason_mapping(self):
+    def test_anthropic_stop_reason_mapping(self, mock_provider):
         """Test Anthropic stop_reason mapping to OpenAI style."""
         stop_reason_map = {
             "end_turn": "stop",

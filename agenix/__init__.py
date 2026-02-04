@@ -6,8 +6,8 @@ from .core import (
     Agent,
     AgentConfig,
     LLMProvider,
-    OpenAIProvider,
-    AnthropicProvider,
+    LiteLLMProvider,
+    get_provider,
     SessionManager,
     # Messages
     Message,
@@ -23,17 +23,9 @@ from .core import (
 )
 
 from .extensions import (
-    # Agent Registry
-    AgentRegistry,
-    AgentConfig as RegistryAgentConfig,
     # Tool Registry
     ToolRegistry,
     ToolConfig,
-    # Permission
-    PermissionManager,
-    PermissionRuleset,
-    Rule,
-    PermissionDeniedError,
 )
 
 from .tools import (
@@ -54,8 +46,8 @@ __all__ = [
     "Agent",
     "AgentConfig",
     "LLMProvider",
-    "OpenAIProvider",
-    "AnthropicProvider",
+    "LiteLLMProvider",
+    "get_provider",
     "SessionManager",
     # Messages
     "Message",
@@ -68,15 +60,8 @@ __all__ = [
     "Usage",
     "Event",
     # Extensions - Registry
-    "AgentRegistry",
-    "RegistryAgentConfig",
     "ToolRegistry",
     "ToolConfig",
-    # Extensions - Permission
-    "PermissionManager",
-    "PermissionRuleset",
-    "Rule",
-    "PermissionDeniedError",
     # Tools
     "Tool",
     "ToolResult",
